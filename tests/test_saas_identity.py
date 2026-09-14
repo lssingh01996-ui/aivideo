@@ -62,7 +62,7 @@ print(
 )
 
 # Imports AFTER the DATABASE_URL override so the engine binds to vid01_test.
-from db.models import Tenant, Workspace, Project  # noqa: E402
+from db.models import Tenant, Workspace, Project, User, TenantMembership, WorkspaceMembership  # noqa: E402
 from lib.db import Base, engine  # noqa: E402
 
 # A dedicated test-engine session factory bound to the vid01_test engine.
@@ -72,7 +72,7 @@ TestSession = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 @pytest.fixture(scope="module", autouse=True)
 def _identity_tables():
-    """Create Phase 1A tables once; drop them after the module."""
+    """Create Phase 1A/1B tables once; drop them after the module."""
     Base.metadata.create_all(bind=engine)
     yield
     Base.metadata.drop_all(bind=engine)
@@ -85,6 +85,17 @@ def session(_identity_tables):
         yield s
     finally:
         s.close()
+
+
+def _user(session, email: str | None = None) -> User:
+    u = User(
+        id=uuid4(),
+        email=email or f"user-{uuid4().hex[:8]}@example.com",
+        password_hash="fake-hash",
+    )
+    session.add(u)
+    session.commit()
+    return u
 
 
 def _tenant(session, name: str | None = None) -> Tenant:
@@ -363,3 +374,120 @@ def test_project_updated_on_modify(session):
     got = session.get(Project, p.id)
     assert got.created_at == created
     assert got.updated_at >= updated_before
+
+
+# --- User (Phase 1B) ---
+
+def test_create_user(session):
+    email = f"test-{uuid4().hex[:8]}@example.com"
+    u = User(id=uuid4(), email=email, password_hash="hashed")
+    session.add(u)
+    session.commit()
+    got = session.get(User, u.id)
+    assert got is not None
+    assert got.email == email
+    assert got.password_hash == "hashed"
+    assert got.is_active is True
+
+
+def test_create_tenant_membership(session):
+    u = _user(session)
+    t = _tenant(session)
+    tm = TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t.id, role="admin")
+    session.add(tm)
+    session.commit()
+    got = session.get(TenantMembership, tm.id)
+    assert got is not None
+    assert got.user_id == u.id
+    assert got.tenant_id == t.id
+    assert got.role == "admin"
+
+
+def test_tenant_membership_unique_user_tenant(session):
+    u = _user(session)
+    t = _tenant(session)
+    tm1 = TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t.id)
+    session.add(tm1)
+    session.commit()
+    tm2 = TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t.id)
+    session.add(tm2)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_tenant_membership_invalid_role(session):
+    u = _user(session)
+    t = _tenant(session)
+    tm = TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t.id, role="invalid")
+    session.add(tm)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_create_workspace_membership(session):
+    u = _user(session)
+    t = _tenant(session)
+    tm = TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t.id)
+    session.add(tm)
+    w = _workspace(session, t)
+    wm = WorkspaceMembership(id=uuid4(), user_id=u.id, tenant_id=t.id, workspace_id=w.id, role="admin")
+    session.add(wm)
+    session.commit()
+    got = session.get(WorkspaceMembership, wm.id)
+    assert got is not None
+    assert got.user_id == u.id
+    assert got.workspace_id == w.id
+
+
+def test_workspace_membership_rejects_non_tenant_member(session):
+    u = _user(session)
+    t = _tenant(session)
+    w = _workspace(session, t)
+    wm = WorkspaceMembership(id=uuid4(), user_id=u.id, tenant_id=t.id, workspace_id=w.id)
+    session.add(wm)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_workspace_membership_rejects_foreign_workspace(session):
+    u = _user(session)
+    t1 = _tenant(session)
+    t2 = _tenant(session)
+    tm = TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t1.id)
+    session.add(tm)
+    w2 = _workspace(session, t2)
+    wm = WorkspaceMembership(id=uuid4(), user_id=u.id, tenant_id=t1.id, workspace_id=w2.id)
+    session.add(wm)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_workspace_membership_unique_user_workspace(session):
+    u = _user(session)
+    t = _tenant(session)
+    tm = TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t.id)
+    w = _workspace(session, t)
+    wm1 = WorkspaceMembership(id=uuid4(), user_id=u.id, tenant_id=t.id, workspace_id=w.id)
+    session.add_all([tm, wm1])
+    session.commit()
+    wm2 = WorkspaceMembership(id=uuid4(), user_id=u.id, tenant_id=t.id, workspace_id=w.id)
+    session.add(wm2)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_workspace_membership_invalid_role(session):
+    u = _user(session)
+    t = _tenant(session)
+    tm = TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t.id)
+    w = _workspace(session, t)
+    wm = WorkspaceMembership(id=uuid4(), user_id=u.id, tenant_id=t.id, workspace_id=w.id, role="invalid")
+    session.add_all([tm, wm])
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
