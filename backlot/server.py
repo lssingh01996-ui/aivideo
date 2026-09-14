@@ -165,6 +165,17 @@ async def _lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="Backlot", docs_url=None, redoc_url=None, lifespan=_lifespan)
 
+    # Phase 1B Step 7: session identity foundation (no route protection yet).
+    # Starlette SessionMiddleware is a signed client-side cookie; only user_id is stored.
+    from starlette.middleware.sessions import SessionMiddleware
+    try:
+        from lib.auth_session import get_session_settings
+        app.add_middleware(SessionMiddleware, **get_session_settings())
+    except ValueError:
+        # SESSION_SECRET not set — app still starts (health checks etc.)
+        # Any request that needs a session will surface the clear ValueError.
+        pass
+
     # ---- API ----------------------------------------------------------
 
     @app.get("/api/health")
