@@ -99,6 +99,10 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    project_memberships: Mapped[list["ProjectMembership"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +494,11 @@ class Project(Base):
         overlaps="projects,tenant",
     )
 
+    memberships: Mapped[list["ProjectMembership"]] = relationship(
+        back_populates="project",
+        cascade="all, delete-orphan",
+    )
+
     __table_args__ = (
         # Project workspace MUST belong to the project's tenant.
         ForeignKeyConstraint(
@@ -503,6 +512,13 @@ class Project(Base):
             "workspace_id",
             "slug",
             name="uq_project_tenant_workspace_slug",
+        ),
+        # Referenced column pair for ProjectMembership composite FK
+        # must be unique so PostgreSQL accepts the composite reference.
+        UniqueConstraint(
+            "id",
+            "workspace_id",
+            name="uq_project_id_workspace_id",
         ),
         Index(
             "idx_project_tenant_id",
@@ -520,4 +536,79 @@ class Project(Base):
             "idx_project_status",
             "status",
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Project Membership
+# ---------------------------------------------------------------------------
+
+
+class ProjectMembership(Base):
+    """Associates a user with a project (same workspace enforced by DB)."""
+
+    __tablename__ = "project_memberships"
+
+    id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        primary_key=True,
+        default=uuid4,
+    )
+
+    user_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    project_id: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        nullable=False,
+    )
+
+    role: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="member",
+        server_default="member",
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=_utcnow,
+    )
+
+    user: Mapped["User"] = relationship(
+        back_populates="project_memberships",
+    )
+
+    project: Mapped["Project"] = relationship(
+        back_populates="memberships",
+    )
+
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["project_id", "workspace_id"],
+            ["projects.id", "projects.workspace_id"],
+            name="fk_project_membership_project",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint(
+            "user_id",
+            "project_id",
+            name="uq_project_membership_user_project",
+        ),
+        CheckConstraint(
+            "role IN ('owner', 'admin', 'member')",
+            name="ck_project_membership_role",
+        ),
+        Index("idx_project_membership_user_id", "user_id"),
+        Index("idx_project_membership_project_id", "project_id"),
+        Index("idx_project_membership_workspace_id", "workspace_id"),
     )

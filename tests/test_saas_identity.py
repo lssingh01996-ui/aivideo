@@ -62,7 +62,15 @@ print(
 )
 
 # Imports AFTER the DATABASE_URL override so the engine binds to vid01_test.
-from db.models import Tenant, Workspace, Project, User, TenantMembership, WorkspaceMembership  # noqa: E402
+from db.models import (
+    Project,
+    ProjectMembership,
+    Tenant,
+    TenantMembership,
+    User,
+    Workspace,
+    WorkspaceMembership,
+)  # noqa: E402
 from lib.db import Base, engine  # noqa: E402
 
 # A dedicated test-engine session factory bound to the vid01_test engine.
@@ -488,6 +496,101 @@ def test_workspace_membership_invalid_role(session):
     w = _workspace(session, t)
     wm = WorkspaceMembership(id=uuid4(), user_id=u.id, tenant_id=t.id, workspace_id=w.id, role="invalid")
     session.add_all([tm, wm])
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+# --- Project Membership (Phase 1B Step 6) ---
+
+def test_create_project_membership(session):
+    u = _user(session)
+    t = _tenant(session)
+    tm = TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t.id)
+    w = _workspace(session, t)
+    p = Project(id=f"proj-{uuid4().hex[:8]}", tenant_id=t.id, workspace_id=w.id,
+                slug="pm-test", title="PM", pipeline_type="cinematic",
+                status="active", storage_path=f"/w/{w.id}/pm")
+    session.add_all([tm, p])
+    session.commit()
+    pm = ProjectMembership(id=uuid4(), user_id=u.id, project_id=p.id, workspace_id=w.id, role="admin")
+    session.add(pm)
+    session.commit()
+    got = session.get(ProjectMembership, pm.id)
+    assert got is not None
+    assert got.user_id == u.id
+    assert got.project_id == p.id
+
+
+def test_project_membership_unique_user_project(session):
+    u = _user(session)
+    t = _tenant(session)
+    w = _workspace(session, t)
+    p = Project(id=f"proj-{uuid4().hex[:8]}", tenant_id=t.id, workspace_id=w.id,
+                slug="dup", title="D", pipeline_type="cinematic", status="active",
+                storage_path=f"/w/{w.id}/dup")
+    session.add_all([TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t.id), p])
+    session.commit()
+    pm1 = ProjectMembership(id=uuid4(), user_id=u.id, project_id=p.id, workspace_id=w.id)
+    session.add(pm1)
+    session.commit()
+    pm2 = ProjectMembership(id=uuid4(), user_id=u.id, project_id=p.id, workspace_id=w.id)
+    session.add(pm2)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_project_membership_rejects_foreign_project(session):
+    u = _user(session)
+    t = _tenant(session)
+    tm = TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t.id)
+    w = _workspace(session, t)
+    p = Project(id=f"proj-{uuid4().hex[:8]}", tenant_id=t.id, workspace_id=w.id,
+                slug="bad", title="B", pipeline_type="cinematic", status="active",
+                storage_path=f"/w/{w.id}/bad")
+    session.add_all([tm, p])
+    session.commit()
+    pm = ProjectMembership(id=uuid4(), user_id=u.id, project_id="does-not-exist", workspace_id=w.id)
+    session.add(pm)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_project_membership_rejects_cross_workspace(session):
+    """fk_project_membership_project: project from workspace A must not be
+    referenced with workspace B."""
+    u = _user(session)
+    t = _tenant(session)
+    tm = TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t.id)
+    session.add(tm)
+    wA = _workspace(session, t, name="wA")
+    pA = Project(id=f"proj-{uuid4().hex[:8]}", tenant_id=t.id, workspace_id=wA.id,
+                 slug="pA", title="PA", pipeline_type="cinematic", status="active",
+                 storage_path=f"/w/{wA.id}/pa")
+    session.add_all([tm, pA])
+    session.commit()
+    wB = _workspace(session, t, name="wB")
+    pm = ProjectMembership(id=uuid4(), user_id=u.id, project_id=pA.id, workspace_id=wB.id)
+    session.add(pm)
+    with pytest.raises(IntegrityError):
+        session.commit()
+    session.rollback()
+
+
+def test_project_membership_invalid_role(session):
+    u = _user(session)
+    t = _tenant(session)
+    tm = TenantMembership(id=uuid4(), user_id=u.id, tenant_id=t.id)
+    w = _workspace(session, t)
+    p = Project(id=f"proj-{uuid4().hex[:8]}", tenant_id=t.id, workspace_id=w.id,
+                slug="badrole", title="BR", pipeline_type="cinematic", status="active",
+                storage_path=f"/w/{w.id}/badrole")
+    session.add_all([tm, p])
+    session.commit()
+    pm = ProjectMembership(id=uuid4(), user_id=u.id, project_id=p.id, workspace_id=w.id, role="bad")
+    session.add(pm)
     with pytest.raises(IntegrityError):
         session.commit()
     session.rollback()
