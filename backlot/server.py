@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from sqlalchemy import select
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -192,15 +193,56 @@ def create_app() -> FastAPI:
         return {"ok": True, "app": "backlot"}
 
     @app.get("/api/projects")
-    async def projects() -> list:
-        return await asyncio.to_thread(_cached_summaries)
+    async def projects(request: Request) -> list:
+        from lib.auth_session import get_current_user
+        from lib.db import SessionFactory
+        from db.models import Project, ProjectMembership, TenantMembership, WorkspaceMembership
+        from sqlalchemy import select, and_
+        user = get_current_user(request)
+        if user is None:
+            raise HTTPException(status_code=401, detail="Not authenticated")
+        db = SessionFactory()
+        try:
+            # Full chain: explicit TenantMembership + WorkspaceMembership + ProjectMembership
+            # No implicit grants (step 9 contract preserved)
+            rows = db.execute(
+                select(Project).join(
+                    ProjectMembership, Project.id == ProjectMembership.project_id
+                ).join(
+                    WorkspaceMembership,
+                    and_(Project.workspace_id == WorkspaceMembership.workspace_id,
+                         ProjectMembership.user_id == WorkspaceMembership.user_id),
+                ).join(
+                    TenantMembership,
+                    and_(Project.tenant_id == TenantMembership.tenant_id,
+                         WorkspaceMembership.user_id == TenantMembership.user_id),
+                )
+                .where(
+                    ProjectMembership.user_id == user.id,
+                    TenantMembership.user_id == user.id,
+                    WorkspaceMembership.user_id == user.id,
+                )
+            ).scalars().all()
+            # Convert to summaries using existing helper (simplified)
+            result = []
+            for p in rows:
+                # Use minimal representation consistent with current board contract
+                result.append({
+                    "project_id": p.id,
+                    "title": p.title,
+                    "pipeline_type": p.pipeline_type,
+                    "status": p.status,
+                })
+            return result
+        finally:
+            db.close()
 
     @app.get("/api/project/{project_id}/state", dependencies=[Depends(require_project_member)])
     async def project_state(project_id: str) -> dict:
         project_dir = _safe_project_dir(project_id)
         return await asyncio.to_thread(load_board_state, project_dir)
 
-    @app.get("/api/project/{project_id}/events")
+    @app.get("/api/project/{project_id}/events", dependencies=[Depends(require_project_member)])
     async def project_events(project_id: str, request: Request) -> StreamingResponse:
         _safe_project_dir(project_id)  # 404 early for unknown projects
 
@@ -261,7 +303,7 @@ def create_app() -> FastAPI:
 
     # ---- Thumbnails (downscaled, cached on disk) ------------------------
 
-    @app.get("/thumb/{project_id}/{file_path:path}")
+    @app.get("/thumb/{project_id}/{file_path:path}", dependencies=[Depends(require_project_member)])
     async def thumb(project_id: str, file_path: str, w: int = 640) -> FileResponse:
         project_dir = _safe_project_dir(project_id)
         target = (project_dir / file_path).resolve()
@@ -283,7 +325,7 @@ def create_app() -> FastAPI:
 
     # ---- Media (range requests handled by FileResponse) ---------------
 
-    @app.get("/media/{project_id}/{file_path:path}")
+    @app.get("/media/{project_id}/{file_path:path}", dependencies=[Depends(require_project_member)])
     async def media(project_id: str, file_path: str) -> FileResponse:
         project_dir = _safe_project_dir(project_id)
         target = (project_dir / file_path).resolve()

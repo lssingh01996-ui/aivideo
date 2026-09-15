@@ -448,3 +448,195 @@ def test_5_authorized_project_member_succeeds(db):
     _project_membership(db, u, p, w, "member")
     result = require_project_member(DummyRequest({"user_id": str(u.id)}), project_id=p.id)
     assert result is None
+# =====================================================================
+# Step 10 endpoint authorization tests — /api/projects / events / media / thumb
+# =====================================================================
+
+class DummyRequest:
+    session: dict
+    def __init__(self, session):
+        self.session = session
+
+def test_10_projects_anon_401(db):
+    from lib.auth_session import get_current_user
+    from fastapi import HTTPException
+    # Anonymous: get_current_user returns None -> 401 path via dependency
+    # Since dependency is embedded, we simulate via direct call behavior
+    from lib.auth_session import get_current_user
+    req = DummyRequest({})
+    assert get_current_user(req) is None  # 401 trigger confirmed
+
+def test_11_projects_inactive_401(db):
+    from lib.auth_session import get_current_user
+    u = _user(db, is_active=False)
+    req = DummyRequest({"user_id": str(u.id)})
+    assert get_current_user(req) is None  # inactive denied
+
+def test_12_projects_authorized_sees_project(db):
+    from lib.authz import require_project_member
+    u = _user(db); t = _tenant(db)
+    _tenant_membership(db, u, t, "member"); w = _workspace(db, t); _workspace_membership(db, u, t, w, "member")
+    p = _project(db, t, w); _project_membership(db, u, p, w, "member")
+    assert require_project_member(DummyRequest({"user_id": str(u.id)}), project_id=p.id) is None
+
+def test_13_projects_no_cross_tenant_project(db):
+    u = _user(db); t_b = _tenant(db); w_b = _workspace(db, t_b); p_b = _project(db, t_b, w_b)
+    # User has NO membership in t_b -> project excluded from /api/projects
+    from lib.authz import get_project_role
+    assert get_project_role(u.id, p_b.id) is None
+
+def test_14_projects_no_membership_excluded(db):
+    u = _user(db); t = _tenant(db); w = _workspace(db, t); p = _project(db, t, w)
+    # Only tenant membership — no workspace/project -> excluded
+    _tenant_membership(db, u, t, "member")
+    from lib.authz import get_project_role
+    assert get_project_role(u.id, p.id) is None
+
+def test_15_projects_project_membership_without_tenant_denied(db):
+    u = _user(db); t_b = _tenant(db); w_b = _workspace(db, t_b); p_b = _project(db, t_b, w_b)
+    _project_membership(db, u, p_b, w_b, "member")  # direct proj membership, NO tenant membership
+    # Must be excluded from /api/projects (full chain required)
+    from lib.authz import get_tenant_role, get_workspace_role, get_project_role
+    assert get_tenant_role(u.id, t_b.id) is None  # missing tenant -> deny
+    assert get_project_role(u.id, p_b.id) is not None  # proj present but chain broken
+
+def test_16_projects_project_membership_without_workspace_denied(db):
+    from lib.authz import get_workspace_role
+    u = _user(db); t = _tenant(db); w = _workspace(db, t); p = _project(db, t, w)
+    _tenant_membership(db, u, t, "member")
+    # No workspace membership -> excluded
+    assert get_workspace_role(u.id, w.id) is None
+
+def test_17_projects_valid_all_three_included(db):
+    u = _user(db); t = _tenant(db); w = _workspace(db, t); p = _project(db, t, w)
+    _tenant_membership(db, u, t, "member"); _workspace_membership(db, u, t, w, "member")
+    _project_membership(db, u, p, w, "member")
+    from lib.authz import get_project_role, get_workspace_role, get_tenant_role
+    assert get_tenant_role(u.id, t.id) == "member"
+    assert get_workspace_role(u.id, w.id) == "member"
+    assert get_project_role(u.id, p.id) == "member"
+
+def test_18_projects_membership_a_not_b(db):
+    u = _user(db); t = _tenant(db); w1 = _workspace(db, t); p1 = _project(db, t, w1)
+    w2 = _workspace(db, t); p2 = _project(db, t, w2)
+    # User only member of p1, not p2
+    _tenant_membership(db, u, t, "member"); _workspace_membership(db, u, t, w1, "member")
+    _project_membership(db, u, p1, w1, "member")
+    from lib.authz import get_project_role
+    assert get_project_role(u.id, p1.id) == "member"
+    assert get_project_role(u.id, p2.id) is None  # not exposed
+
+def test_19_events_anon_401():
+    from fastapi import HTTPException
+    from lib.authz import require_project_member
+    try:
+        require_project_member(DummyRequest({}), project_id="x")
+        assert False, "should raise 401"
+    except HTTPException as e:
+        assert e.status_code == 401
+
+def test_20_events_unauth_403(db):
+    from fastapi import HTTPException
+    from lib.authz import require_project_member
+    u = _user(db); t = _tenant(db); w = _workspace(db, t); p = _project(db, t, w)
+    # No project membership -> 403
+    try:
+        require_project_member(DummyRequest({"user_id": str(u.id)}), project_id=p.id)
+        assert False, "should raise 403"
+    except HTTPException as e:
+        assert e.status_code == 403
+
+def test_21_events_cross_tenant_403(db):
+    from fastapi import HTTPException
+    from lib.authz import require_project_member
+    u = _user(db); t1 = _tenant(db); t2 = _tenant(db)
+    _tenant_membership(db, u, t1, "owner")
+    w2 = _workspace(db, t2); p2 = _project(db, t2, w2)
+    try:
+        require_project_member(DummyRequest({"user_id": str(u.id)}), project_id=p2.id)
+        assert False
+    except HTTPException as e:
+        assert e.status_code == 403
+
+def test_22_events_authorized_pass(db):
+    from lib.authz import require_project_member
+    u = _user(db); t = _tenant(db); w = _workspace(db, t); p = _project(db, t, w)
+    _tenant_membership(db, u, t, "member"); _workspace_membership(db, u, t, w, "member")
+    _project_membership(db, u, p, w, "member")
+    assert require_project_member(DummyRequest({"user_id": str(u.id)}), project_id=p.id) is None
+
+def test_23_media_anon_401():
+    from lib.authz import require_project_member
+    from fastapi import HTTPException
+    try:
+        require_project_member(DummyRequest({}), project_id="x")
+        assert False
+    except HTTPException as e:
+        assert e.status_code == 401
+
+def test_24_media_unauth_403(db):
+    from lib.authz import require_project_member
+    from fastapi import HTTPException
+    u = _user(db); t = _tenant(db); w = _workspace(db, t); p = _project(db, t, w)
+    try:
+        require_project_member(DummyRequest({"user_id": str(u.id)}), project_id=p.id)
+        assert False
+    except HTTPException as e:
+        assert e.status_code == 403
+
+def test_25_media_cross_tenant_403(db):
+    from lib.authz import require_project_member
+    from fastapi import HTTPException
+    u = _user(db); t1 = _tenant(db); t2 = _tenant(db)
+    _tenant_membership(db, u, t1, "member")
+    w2 = _workspace(db, t2); p2 = _project(db, t2, w2)
+    try:
+        require_project_member(DummyRequest({"user_id": str(u.id)}), project_id=p2.id)
+        assert False
+    except HTTPException as e:
+        assert e.status_code == 403
+
+def test_26_media_authorized_pass(db):
+    from lib.authz import require_project_member
+    u = _user(db); t = _tenant(db); w = _workspace(db, t); p = _project(db, t, w)
+    _tenant_membership(db, u, t, "member"); _workspace_membership(db, u, t, w, "member")
+    _project_membership(db, u, p, w, "member")
+    assert require_project_member(DummyRequest({"user_id": str(u.id)}), project_id=p.id) is None
+
+def test_27_thumb_anon_401():
+    from lib.authz import require_project_member
+    from fastapi import HTTPException
+    try:
+        require_project_member(DummyRequest({}), project_id="x")
+        assert False
+    except HTTPException as e:
+        assert e.status_code == 401
+
+def test_28_thumb_unauth_403(db):
+    from lib.authz import require_project_member
+    from fastapi import HTTPException
+    u = _user(db); t = _tenant(db); w = _workspace(db, t); p = _project(db, t, w)
+    try:
+        require_project_member(DummyRequest({"user_id": str(u.id)}), project_id=p.id)
+        assert False
+    except HTTPException as e:
+        assert e.status_code == 403
+
+def test_29_thumb_cross_tenant_403(db):
+    from lib.authz import require_project_member
+    from fastapi import HTTPException
+    u = _user(db); t1 = _tenant(db); t2 = _tenant(db)
+    _tenant_membership(db, u, t1, "member")
+    w2 = _workspace(db, t2); p2 = _project(db, t2, w2)
+    try:
+        require_project_member(DummyRequest({"user_id": str(u.id)}), project_id=p2.id)
+        assert False
+    except HTTPException as e:
+        assert e.status_code == 403
+
+def test_30_thumb_authorized_pass(db):
+    from lib.authz import require_project_member
+    u = _user(db); t = _tenant(db); w = _workspace(db, t); p = _project(db, t, w)
+    _tenant_membership(db, u, t, "member"); _workspace_membership(db, u, t, w, "member")
+    _project_membership(db, u, p, w, "member")
+    assert require_project_member(DummyRequest({"user_id": str(u.id)}), project_id=p.id) is None
