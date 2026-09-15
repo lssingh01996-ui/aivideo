@@ -14,11 +14,13 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from backlot.state import PROJECTS_DIR, REPO_ROOT, list_projects, load_board_state, summarize_project
+
+from lib.authz import require_project_member
 
 UI_DIR = Path(__file__).resolve().parent / "ui"
 THUMB_CACHE_DIR = REPO_ROOT / ".backlot" / "thumbs"
@@ -193,7 +195,7 @@ def create_app() -> FastAPI:
     async def projects() -> list:
         return await asyncio.to_thread(_cached_summaries)
 
-    @app.get("/api/project/{project_id}/state")
+    @app.get("/api/project/{project_id}/state", dependencies=[Depends(require_project_member)])
     async def project_state(project_id: str) -> dict:
         project_dir = _safe_project_dir(project_id)
         return await asyncio.to_thread(load_board_state, project_dir)
