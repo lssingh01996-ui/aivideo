@@ -170,11 +170,18 @@ def create_app() -> FastAPI:
     from starlette.middleware.sessions import SessionMiddleware
     try:
         from lib.auth_session import get_session_settings
-        app.add_middleware(SessionMiddleware, **get_session_settings())
+        session_settings = get_session_settings()
+        # Starlette 1.6.0 does not accept the internal "httponly" setting.
+        session_settings.pop("httponly", None)
+        app.add_middleware(SessionMiddleware, **session_settings)
     except ValueError:
         # SESSION_SECRET not set — app still starts (health checks etc.)
         # Any request that needs a session will surface the clear ValueError.
         pass
+
+    # Phase 1B Step 8: authentication endpoints.
+    from backlot.auth_endpoints import router as auth_router
+    app.include_router(auth_router)
 
     # ---- API ----------------------------------------------------------
 

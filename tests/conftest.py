@@ -29,6 +29,29 @@ from a subprocess in tests.
 from __future__ import annotations
 
 import os
+from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
+
+from dotenv import load_dotenv
+
+# Load the project environment before any test module imports application code.
+# All automated tests use the isolated PostgreSQL test database.
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_PROJECT_ROOT / ".env")
+
+_RAW_DATABASE_URL = os.environ.get("DATABASE_URL", "")
+if _RAW_DATABASE_URL:
+    _parsed = urlsplit(_RAW_DATABASE_URL)
+    os.environ["DATABASE_URL"] = urlunsplit(
+        (
+            _parsed.scheme,
+            _parsed.netloc,
+            "/vid01_test",
+            _parsed.query,
+            _parsed.fragment,
+        )
+    )
+
 import socket
 
 import pytest

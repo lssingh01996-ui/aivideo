@@ -19,3 +19,8 @@ watchfiles>=0.21
 sqlalchemy>=2.0
 psycopg2-binary>=2.9
 alembic>=1.13
+
+# Phase 1B - Session authentication and password security
+bcrypt>=4.1.0
+itsdangerous>=2.1.2
+email-validator>=2.2.0
